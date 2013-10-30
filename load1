@@ -1,0 +1,125 @@
+#!/usr/bin/python
+
+import sys, getopt, os, commands, MySQLdb
+def usage():
+   print 'Usage: ./load1 -i <inputfile> -d <database> -type <type>'
+   print '        <type> can be: haloparticles  haloparticletags  fofproperties bighaloparticles'
+   sys.exit(2)
+
+def printme( str ):
+   "This prints a passed string into this function"
+   print str;
+   return;
+
+def listmydir():
+   os.system("ls -F --color");
+   retvalue = os.system("hostname");
+   print retvalue
+
+def gioascii( str ):
+   print("Converting binary GIO into ascii");
+   os.system("mkdir -p ./tmp");
+   os.system("GenericIOPrint --no-rank-info  $DATADIR/{} | grep -v \"#\" > ./tmp/{}.ascii ".format(str,str) );
+
+def fof( str ):
+   print("Processing the FOF Properties file: converting ASCII to CSV to SciDB formats");
+   os.system("cat tmp/%s.ascii | grep -v \"\^#\" | awk '{ print $1\",\"$2\",\"$3\",\"$4\",\"$5\",\"$6\",\"$7\",\"$8\",\"$9\",\"$10\",\"$11\",\"$12\",\"$13}'> tmp/%s.csv  " % (str, str) );
+   os.system("csv2scidb -p NNNNNNNNNNNNN < tmp/{}.csv > tmp/{}.scidb".format(str,str));
+
+def createfofarray(str):
+   os.system("iquery -aq \"create array %s <fof_halo_count:int64, fof_halo_tag:int64, fof_halo_mass:double, fof_halo_center_x:double, fof_halo_center_y:double, fof_halo_center_z:double, fof_halo_mean_x:double, fof_halo_mean_y:double, fof_halo_mean_z:double, fof_halo_mean_vx:double, fof_halo_mean_vy:double, fof_halo_mean_vz:double, fof_halo_vel_disp:double>[i=0:409091,100000,0];\" " % str);
+
+def loadarray(str,str2,str3):
+#i need locladir here since this load is not aware of its environment
+   os.system("iquery -aq \"load({}, '{}/tmp/{}.scidb')\"".format(str2 , str3, str) );
+
+
+#######################################################################
+def main(argv):
+   try:
+     inputfile = ''
+     outputfile = ''
+     cdir = ''
+     database = ''
+     arrayname = ''
+     localdir = ''
+
+     opts, args = getopt.getopt(sys.argv[1:],"hi:o:d:t:")
+     total = len(sys.argv)
+     if total == 1:
+         usage();
+   except getopt.GetoptError as err:
+        print str(err)
+        usage();
+        sys.exit(2);
+   for opt, arg in opts:
+      if opt == ' ':
+         usage();
+      if opt == '-h':
+         usage();
+      if opt == '-i':
+         inputfile = arg
+      elif opt == '-o':
+         outputfile = arg
+      elif opt ==  '-d':
+         database = arg
+      elif opt ==  '-t':
+         type = arg
+      else:
+         print("unhandled option")
+         usage();
+#######################################################################
+# Print metadata to screen
+
+   print 'The input file is ', inputfile
+   cdir = commands.getoutput('echo $DATADIR')
+   print 'located in', cdir
+   print 'database ', database
+   print 'type ', type
+   localdir = commands.getoutput('pwd')
+
+#######################################################################
+# Type is necessary since each file has a diferent number of columns 
+# and the csv2scidb needs to specify them with the -p argument
+#######################################################################
+   if database == 'scidb':
+      print("SciDB")
+      if type == 'fof':
+
+            gioascii(inputfile);
+            fof(inputfile);      
+
+#           adjustment required since scidb doesnt like array names with 
+#           dots or special chars
+            arrayname = inputfile.replace(".", "1")
+
+            createfofarray(arrayname);
+            loadarray(inputfile,arrayname,localdir);
+
+
+   elif database == 'mysql': 
+      print("MySQL")
+
+## Open database connection
+#db = MySQLdb.connect("localhost","testuser","test123","TESTDB" )
+#
+## prepare a cursor object using cursor() method
+#cursor = db.cursor()
+#
+## Drop table if it already exist using execute() method.
+#cursor.execute("DROP TABLE IF EXISTS EMPLOYEE")
+#
+## Create table as per requirement
+#sql = """CREATE TABLE FOFPROPERTIES (
+#         fof_halo_count  INT,
+#         fof_halo_tag  INT,
+#         fof_halo_mass FLOAT,  
+#         fof_halo_center_x FLOAT )"""
+#
+#cursor.execute(sql)
+#
+## disconnect from server
+#db.close()
+
+if __name__ == "__main__":
+   main(sys.argv[1:])
