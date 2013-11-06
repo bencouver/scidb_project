@@ -1,0 +1,198 @@
+#!/usr/bin/python
+
+import sys, getopt, os, commands, MySQLdb, csv
+
+
+def usage():
+   print 'Usage: ./load1 -i <inputfile> -d <database> -t <type> --time <timestep> --sid <simulationid>'
+   print '        <type> can be: haloparticles  haloparticletags  fofproperties bighaloparticles'
+   sys.exit(2)
+
+def printme( str ):
+   "This prints a passed string into this function"
+   print str;
+   return;
+
+def listmydir():
+   os.system("ls -F --color");
+   retvalue = os.system("hostname");
+   print retvalue
+
+#---------------------------------------------------------------------
+def fofgiocsv( str,time,sid ):
+   print("Converting binary GIO into csv and adding  timestep-simulationid columns");
+   os.system("mkdir -p ./tmp");
+   os.system("GenericIOPrint $DATADIR/%s | awk '{ if ($2==\"rank\") { SB = $3 } ; { print SB\",\"$1\",\"$2\",\"$3\",\"$4\",\"$5\",\"$6\",\"$7\",\"$8\",\"$9\",\"$10\",\"$11\",\"$12\",\"$13\",\" %s \",\" %s } }' | sed 's/\://g' | grep -v \"physical\" | grep -v \"rank\" | grep -v \"fof\"> ./tmp/%s.csv " % (str,time,sid,str));
+
+
+def fofcsvscidb( str,num ):
+   print("Processing the FOF Properties file: converting CSV to SciDB format");
+   os.system("cat tmp/{}.csv | grep \"^{},\"> tmp/{}{}.csv".format(str,num,str,num));
+   os.system("csv2scidb -p NNNNNNNNNNNNNNNN < tmp/{}{}.csv > tmp/{}{}.scidb".format(str,num,str,num));
+
+def fofcreatearray(str):
+   os.system("iquery -aq \"create array %s <fof_halo_rank:int64,fof_halo_count:int64, fof_halo_tag:int64, fof_halo_mass:double, fof_halo_center_x:double, fof_halo_center_y:double, fof_halo_center_z:double, fof_halo_mean_x:double, fof_halo_mean_y:double, fof_halo_mean_z:double, fof_halo_mean_vx:double, fof_halo_mean_vy:double, fof_halo_mean_vz:double, fof_halo_vel_disp:double, timestep:int64, simulationid:int64>[i=0:*,100000,0];\" " % str);
+#---------------------------------------------------------------------
+
+
+
+def loadarray(str,str2,str3):
+#i need locladir here since this load is not aware of its environment
+   os.system("iquery -naq \"load({}, '{}/tmp/{}.scidb')\"".format(str2 , str3, str) );
+
+#loadarray(inputfile,arrayname,localdir);
+
+#######################################################################
+def main(argv):
+   try:
+     inputfile = ''
+     outputfile = ''
+     cdir = ''
+     database = ''
+     arrayname = ''
+     localdir = ''
+     timestep = ''
+     simulationid = ''
+
+     opts, args = getopt.getopt(sys.argv[1:],'hi:o:d:i:t:', ['time=','sid='])
+     total = len(sys.argv)
+     if total == 1:
+         usage();
+   except getopt.GetoptError as err:
+        print str(err)
+        usage();
+        sys.exit(2);
+   for opt, arg in opts:
+      if opt == ' ':
+         usage();
+      if opt == '-h':
+         usage();
+      if opt == '-i':
+         inputfile = arg
+      elif opt == '-o':
+         outputfile = arg
+      elif opt ==  '-d':
+         database = arg
+      elif opt ==  '-t':
+         type = arg
+      elif opt == '--time':
+         timestep = arg
+      elif opt == '--sid':
+         simulationid = arg
+      else:
+         print("unhandled option")
+         usage();
+#######################################################################
+# Print metadata to screen
+
+   print("==========================================================")
+   print("Global Parameters")
+   print("==========================================================")
+
+   print 'The input file is: ', inputfile
+   cdir = commands.getoutput('echo $DATADIR')
+   print 'located in:', cdir
+   print 'Selected Database: ', database
+#  The type defines the columns of the tables and other features
+   print 'type: ', type
+   print 'timestep:', timestep
+   print 'simulationID:', simulationid
+   localdir = commands.getoutput('pwd')
+
+#######################################################################
+# Type is necessary since each file has a diferent number of columns 
+# and the csv2scidb needs to specify them with the -p argument
+#######################################################################
+
+   if database == 'scidb':
+
+      print("==========================================================")
+      print("SciDB Selected")
+      print("==========================================================")
+
+      if type == 'fof':
+            
+        if not os.path.exists('tmp/{}.csv'.format(inputfile)):  
+            fofgiocsv(inputfile,timestep,simulationid);
+        else:
+            print 'CVS already exists, no GIO-->CSV required' 
+#Loop around ranks, 8x8x8=512
+
+            ranks=3
+            for i in range(0, 3):
+                 fofcsvscidb(inputfile,i);      
+                 loop_str = ''
+                 loop_str += `i`
+                 arrayname = "m003%ssim%st%srank%s" % (type, simulationid, timestep,loop_str)
+                 inputfilerank= "%s%s" % (inputfile, loop_str)
+                 print(" ")
+                 print("==========================================================")
+                 print 'Creating and loading array ',arrayname
+                 print 'Loading array ', arrayname, 'from file', inputfilerank,'.scidb'
+                 fofcreatearray(arrayname);
+                 loadarray(inputfilerank,arrayname,localdir);
+
+                 print("==========================================================")
+                 print(" ")
+
+            print 'Loaded', ranks, 'ranks into SciDB.'
+
+   elif database == 'mysql': 
+
+     print("==========================================================")
+     print("MySQL Selected")
+     print("==========================================================")
+
+     if type == 'fof':
+        if not os.path.exists('tmp/{}.csv'.format(inputfile)):
+            fofgiocsv(inputfile,timestep,simulationid);
+        else:
+            print 'CVS already exists, no GIO-->CSV required'
+
+# Open database connection
+            print 'Connecting to the database'
+
+            db = MySQLdb.connect("localhost","cosmouser","cebo2llA","cosmology" )
+
+# prepare a cursor object using cursor() method
+            cursor = db.cursor()
+
+            print 'Creating table'
+#           Create table as per requirement, rank+13 cols+timestep+simulationid; fof properties
+            sql = """CREATE TABLE FOFPROPERTIES (
+                fof_halo_rank INT, 
+                fof_halo_count  INT,
+                fof_halo_tag  INT,
+                fof_halo_mass FLOAT,  
+                fof_halo_center_x FLOAT,
+                fof_halo_center_y FLOAT,
+                fof_halo_center_z FLOAT,
+                fof_halo_mean_x FLOAT,
+                fof_halo_mean_y FLOAT,
+                fof_halo_mean_z FLOAT,
+                fof_halo_mean_vx FLOAT,
+                fof_halo_mean_vy FLOAT,
+                fof_halo_mean_vz FLOAT,
+                fof_halo_vel_disp FLOAT, 
+                timestep INT,
+                simulationid INT, PRIMARY KEY (fof_halo_tag,timestep) )"""
+            try:
+                cursor.execute(sql)
+            except:
+                print("Error: Database FOFPROPERTIES already exists!")
+                exit(1)
+
+            print 'Reading csv data and inserting into DB'
+            csv_data = csv.reader(file('/home/benjamin/load/tmp/{}.csv'.format(inputfile)))
+
+            for row in csv_data:
+
+                cursor.execute('''INSERT INTO FOFPROPERTIES(fof_halo_rank,fof_halo_count,fof_halo_tag,fof_halo_mass,fof_halo_center_x,fof_halo_center_y,fof_halo_center_z,fof_halo_mean_x,fof_halo_mean_y,fof_halo_mean_z,fof_halo_mean_vx,fof_halo_mean_vy,fof_halo_mean_vz,fof_halo_vel_disp,timestep,simulationid) VALUES(%s, %s, %s,%s, %s, %s,%s, %s, %s,%s, %s, %s ,%s,%s,%s,%s)''', row)
+
+
+            db.commit()
+# disconnect from server
+            db.close()
+
+if __name__ == "__main__":
+   main(sys.argv[1:])
